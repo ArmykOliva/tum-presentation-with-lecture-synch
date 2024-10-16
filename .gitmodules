@@ -1,0 +1,3 @@
+[submodule "tum_video_scraper"]
+	path = tum_video_scraper
+	url = https://github.com/Valentin-Metz/tum_video_scraper.git

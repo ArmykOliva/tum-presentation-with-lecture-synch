@@ -1,7 +1,13 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
+config.yml
 *$py.class
+videos/
+presentations/
+edited_presentations/
+slide_timestamps.json
+
 
 # C extensions
 *.so

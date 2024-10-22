@@ -1,0 +1,37 @@
+version: '3.8'
+
+# fr this is so fucking smart it makes your python requirements.txt build faster with caching
+# it increases the build size but nobody cares about that
+x-build-args: &build-args
+  DOCKER_BUILDKIT: 1
+
+services:
+  synch-app:
+    build:
+      context: .
+      args:
+        <<: *build-args
+    volumes:
+      - ./presentations:/app/presentations
+      - ./videos:/app/videos
+      - .:/app
+      - pip-cache:/root/.cache/pip
+      - huggingface-cache:/data/models
+      - ./edited_presentations:/app/edited_presentations
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - HUGGINGFACE_HUB_CACHE=/data/models
+    command: python get_timestamps.py
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  pip-cache:
+  huggingface-cache:

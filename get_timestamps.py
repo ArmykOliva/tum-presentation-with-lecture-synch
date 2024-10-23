@@ -25,6 +25,9 @@ from llm import call_llm_json
 from prompts import SLIDE_ANALYSIS_PROMPT
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import SimpleDocTemplate, Paragraph
+from PIL import Image, ImageDraw, ImageFont
+from reportlab.lib.utils import ImageReader
+from textwrap import wrap
 
 from transcription import WhisperTools
 
@@ -121,15 +124,24 @@ def process_presentation(slide_texts, video_path):
                 results.append((t, matched_slide))
                 print(f"  Slide match found at {t}s. slide: {matched_slide}")
     
-    # Remove duplicate slide changes
-    print("Removing duplicate slide changes...")
+    # Remove duplicate slide changes and add last_timestamp
+    print("Removing duplicate slide changes and adding last_timestamp...")
     final_timestamps = []
     current_slide = None
+    last_timestamp = 0
     for t, slide in results:
         if slide != current_slide:
-            final_timestamps.append({'timestamp': t, 'slide': slide})
+            if current_slide is not None:
+                # Update the last_timestamp of the previous slide
+                final_timestamps[-1]['last_timestamp'] = last_timestamp
+            final_timestamps.append({'timestamp': t, 'slide': slide, 'last_timestamp': t})
             current_slide = slide
             print(f"Unique slide match found at {t}s. Slide: {slide}")
+        last_timestamp = t
+    
+    # Update the last_timestamp of the final slide
+    if final_timestamps:
+        final_timestamps[-1]['last_timestamp'] = last_timestamp
     
     print(f"Finished processing. Found {len(final_timestamps)} unique slide matches.")
     return final_timestamps
@@ -326,28 +338,75 @@ for lecture_name, lecture_data in slide_timestamps.items():
     lecture_slides[lecture_name] = lecture_slide_voice_transcripts
 
 #do the prompting
-def create_text_pdf(text, filename):
+def create_text_pdf(text, filename, target_size):
     packet = BytesIO()
-    doc = SimpleDocTemplate(packet, pagesize=letter, topMargin=72, bottomMargin=72, leftMargin=72, rightMargin=72)
+    can = canvas.Canvas(packet, pagesize=target_size)
     
-    styles = getSampleStyleSheet()
-    style = styles['Normal']
-    style.fontSize = 12
-    style.leading = 14
+    # Set font and size
+    font_name = "Helvetica"
+    font_size = 12
+    can.setFont(font_name, font_size)
     
-    flowables = []
-    paragraphs = text.split('\n\n')
-    for para in paragraphs:
-        p = Paragraph(para, style)
-        flowables.append(p)
+    # Set margins
+    left_margin = 72  # 1 inch
+    right_margin = 72
+    top_margin = 72
+    bottom_margin = 72
     
-    doc.build(flowables)
+    # Calculate available width for text
+    available_width = target_size[0] - left_margin - right_margin
+    
+    # Wrap text
+    wrapped_text = []
+    for paragraph in text.split('\n'):
+        wrapped_text.extend(wrap(paragraph, width=int(available_width / (font_size * 0.6))))
+        wrapped_text.append('')  # Add an empty line between paragraphs
+    
+    # Calculate line height
+    line_height = font_size * 1.2
+    
+    # Calculate total text height
+    total_height = len(wrapped_text) * line_height
+    
+    # Calculate starting y-coordinate to center text vertically
+    start_y = target_size[1] - top_margin
+    
+    # Draw text
+    for i, line in enumerate(wrapped_text):
+        can.drawString(left_margin, start_y - i*line_height, line)
+    
+    can.save()
     
     packet.seek(0)
     return PdfReader(packet)
 
 def extract_text_from_pdf_page(pdf_reader, page_number):
     return pdf_reader.pages[page_number].extract_text()
+
+def create_image_pdf(image_path, output_path, target_size):
+    img = Image.open(image_path)
+    # Convert target_size to integers
+    target_size = (int(target_size[0]), int(target_size[1]))
+    img.thumbnail(target_size)  # Resize image while maintaining aspect ratio
+    
+    # Create a new white image with the target size
+    new_img = Image.new('RGB', target_size, (255, 255, 255))
+    
+    # Paste the resized image onto the center of the white background
+    x_offset = (target_size[0] - img.width) // 2
+    y_offset = (target_size[1] - img.height) // 2
+    new_img.paste(img, (x_offset, y_offset))
+    
+    img_reader = ImageReader(new_img)
+    
+    packet = BytesIO()
+    can = canvas.Canvas(packet, pagesize=target_size)
+    can.drawImage(img_reader, 0, 0, width=target_size[0], height=target_size[1])
+    can.save()
+    
+    packet.seek(0)
+    new_pdf = PdfReader(packet)
+    return new_pdf
 
 # Create the edited_presentations folder if it doesn't exist
 edited_presentations_folder = 'edited_presentations'
@@ -385,8 +444,19 @@ for lecture_name, lecture_slides in lecture_slides.items():
     for video_data in slide_timestamps[lecture_name]:
         if 'llm_outputs' not in video_data['video']:
             video_data['video']['llm_outputs'] = {}
+
+    # Get video file path (assuming there's only one video per lecture)
+    video_path = os.path.join('videos', slide_timestamps[lecture_name][0]['video']['name'])
+    video = cv2.VideoCapture(video_path)
     
+    # Get the size of the first page of the original PDF
+    target_size = (
+        int(float(original_pdf.pages[0].mediabox.width)),
+        int(float(original_pdf.pages[0].mediabox.height))
+    )
+
     for slide_number in range(len(original_pdf.pages)):
+        print(f"Processing slide {slide_number}")
         # Add the original slide
         pdf_writer.add_page(original_pdf.pages[slide_number])
         
@@ -436,10 +506,61 @@ for lecture_name, lecture_slides in lecture_slides.items():
             # If there are items to add, create a new slide with the additions
             if llm_output["additions"]:
                 additions_text = "Additions to previous slide:\n\n" + "\n\n".join(f"- {item}" for item in llm_output["additions"])
-                new_slide = create_text_pdf(additions_text, f"slide_{slide_number}_additions")
+                new_slide = create_text_pdf(additions_text, f"slide_{slide_number}_additions", target_size)
                 pdf_writer.add_page(new_slide.pages[0])
+
+            ## VIDEO SCREENSHOT
+            # Find the timestamp for the next slide
+            next_slide_time = None
+            for timestamp in slide_timestamps[lecture_name][0]['video']['timestamps']:
+                if timestamp['slide'] == slide_number + 1:
+                    next_slide_time = timestamp['timestamp']
+                    break
+            
+            if next_slide_time is not None:
+                
+                # Calculate the time to take the screenshot
+                screenshot_time = max(0, next_slide_time - VIDEO_CHUNK - 5)
+                print(f"Screenshotting slide {slide_number} at {screenshot_time} seconds")
+                
+                # Take screenshot from the video
+                video.set(cv2.CAP_PROP_POS_MSEC, screenshot_time * 1000)
+                success, image = video.read()
+                if success:
+                    # Save the screenshot as a temporary file
+                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_image:
+                        cv2.imwrite(temp_image.name, image)
+                        screenshot_path = temp_image.name
+                    
+                    # Open the screenshot with PIL
+                    screenshot = Image.open(screenshot_path)
+                    draw = ImageDraw.Draw(screenshot)
+                    
+                    # Try to load a default system font, fall back to default if not available
+                    try:
+                        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 24)
+                    except IOError:
+                        font = ImageFont.load_default()
+                    
+                    # Add text to the screenshot
+                    screenshot_text = f"Screenshot of slide {slide_number} at {screenshot_time} seconds"
+                    draw.text((10, 10), screenshot_text, font=font, fill=(255, 0, 0))  # Red text
+                    
+                    # Save the modified screenshot
+                    screenshot.save(screenshot_path)
+                    
+                    # Convert the screenshot to PDF and add it
+                    screenshot_pdf = create_image_pdf(screenshot_path, f"slide_{slide_number}_screenshot.pdf", target_size)
+                    pdf_writer.add_page(screenshot_pdf.pages[0])
+                    
+                    # Remove the temporary screenshot file
+                    os.unlink(screenshot_path)
+            
         else:
             print(f"No additional information for slide {slide_number}")
+    
+    # Close the video capture
+    video.release()
     
     # Save the updated PDF in the edited_presentations folder
     with open(output_pdf_path, "wb") as output_file:
@@ -448,3 +569,4 @@ for lecture_name, lecture_slides in lecture_slides.items():
     print(f"Updated PDF saved as: {output_pdf_path}")
 
 print("All presentations have been processed and updated.")
+

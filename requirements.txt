@@ -18,3 +18,4 @@ torchaudio
 rich
 PyPDF2 
 reportlab
+Pillow

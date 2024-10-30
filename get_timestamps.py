@@ -32,6 +32,7 @@ from textwrap import wrap
 from transcription import WhisperTools
 
 VIDEO_CHUNK = 10
+print("start")
 
 # Load configuration from config.yaml
 with open('config.yml', 'r') as config_file:
@@ -68,6 +69,7 @@ def download_video(lecture_name, url, index):
     subprocess.run(command)
     print(f"Download completed. File saved as '{output_filename}'")
 
+print("moneky")
 # Process each lecture in the config
 for lecture_name, urls in config['lectures'].items():
     for index, url in enumerate(urls):
@@ -445,7 +447,7 @@ for lecture_name, lecture_slides in lecture_slides.items():
         if 'llm_outputs' not in video_data['video']:
             video_data['video']['llm_outputs'] = {}
 
-    # Get video file path (assuming there's only one video per lecture)
+    # Get video file paths, there might be multiple videos per lecture
     video_path = os.path.join('videos', slide_timestamps[lecture_name][0]['video']['name'])
     video = cv2.VideoCapture(video_path)
     
@@ -510,18 +512,32 @@ for lecture_name, lecture_slides in lecture_slides.items():
                 pdf_writer.add_page(new_slide.pages[0])
 
             ## VIDEO SCREENSHOT
-            # Find the timestamp for the next slide
-            next_slide_time = None
-            for timestamp in slide_timestamps[lecture_name][0]['video']['timestamps']:
-                if timestamp['slide'] == slide_number + 1:
-                    next_slide_time = timestamp['timestamp']
-                    break
-            
-            if next_slide_time is not None:
+            # Find the timestamp for the next slide across all videos
+            screenshot_data = []
+            for video_data in slide_timestamps[lecture_name]:
+                video_name = video_data['video']['name']
+                next_slide_time = None
                 
-                # Calculate the time to take the screenshot
-                screenshot_time = max(0, next_slide_time - VIDEO_CHUNK - 5)
-                print(f"Screenshotting slide {slide_number} at {screenshot_time} seconds")
+                # Find next slide timestamp in this video
+                for timestamp in video_data['video']['timestamps']:
+                    if timestamp['slide'] == slide_number + 1:
+                        next_slide_time = timestamp['timestamp']
+                        break
+                
+                if next_slide_time is not None:
+                    screenshot_time = max(0, next_slide_time - VIDEO_CHUNK - 1)
+                    screenshot_data.append({
+                        'video_name': video_name,
+                        'screenshot_time': screenshot_time
+                    })
+            
+            # Take screenshots from each video where this slide appears
+            for data in screenshot_data:
+                video_path = os.path.join('videos', data['video_name'])
+                video = cv2.VideoCapture(video_path)
+                screenshot_time = data['screenshot_time']
+                
+                print(f"Screenshotting slide {slide_number} at {screenshot_time} seconds from {data['video_name']}")
                 
                 # Take screenshot from the video
                 video.set(cv2.CAP_PROP_POS_MSEC, screenshot_time * 1000)
@@ -543,7 +559,7 @@ for lecture_name, lecture_slides in lecture_slides.items():
                         font = ImageFont.load_default()
                     
                     # Add text to the screenshot
-                    screenshot_text = f"Screenshot of slide {slide_number} at {screenshot_time} seconds"
+                    screenshot_text = f"Screenshot from {data['video_name']} of slide {slide_number} at {screenshot_time} seconds"
                     draw.text((10, 10), screenshot_text, font=font, fill=(255, 0, 0))  # Red text
                     
                     # Save the modified screenshot
@@ -555,6 +571,9 @@ for lecture_name, lecture_slides in lecture_slides.items():
                     
                     # Remove the temporary screenshot file
                     os.unlink(screenshot_path)
+                
+                # Close the video capture
+                video.release()
             
         else:
             print(f"No additional information for slide {slide_number}")

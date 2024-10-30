@@ -1,5 +1,3 @@
-version: '3.8'
-
 # fr this is so fucking smart it makes your python requirements.txt build faster with caching
 # it increases the build size but nobody cares about that
 x-build-args: &build-args

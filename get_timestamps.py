@@ -105,48 +105,68 @@ def find_matching_slide(video_frame_text, slide_texts):
     
     return best_match if best_score > 80 else None
 
-def process_presentation(slide_texts, video_path):
-    # Load video
-    print("Loading video...")
+def process_video(video_path, slide_texts, whisper_tools):
+    """Process a video once for OCR, transcription, and screenshots."""
+    print(f"Processing video: {video_path}")
+    
     video = VideoFileClip(video_path)
     total_duration = int(video.duration)
-    print(f"Loaded video. Duration: {total_duration} seconds")
+    print(f"Video duration: {total_duration} seconds")
     
-    # Process video frames
-    print("Processing video frames...")
     results = []
+    screenshots = {}
+    transcript_chunks = []
+    
+    # Process video in chunks
     for t in tqdm(range(0, total_duration, VIDEO_CHUNK)):
         frame = video.get_frame(t)
-        frame_text = extract_text_from_image(frame)
-        print(f"Frame {t}s of {total_duration}s")
         
-        if frame_text.strip():  # Check if there's any text in the frame
+        # 1. OCR Processing
+        frame_text = extract_text_from_image(frame)
+        if frame_text.strip():
             matched_slide = find_matching_slide(frame_text, slide_texts)
             if matched_slide is not None:
                 results.append((t, matched_slide))
-                print(f"  Slide match found at {t}s. slide: {matched_slide}")
+                # Store screenshot for this slide transition
+                screenshots[matched_slide] = frame
+        
+        # 2. Transcription (process in larger chunks, e.g., 30 seconds)
+        if t % 30 == 0:
+            chunk_start = t
+            chunk_end = min(t + 30, total_duration)
+            segment = video.subclip(chunk_start, chunk_end)
+            transcript_chunk = whisper_tools.transcribe_segment(segment)
+            if transcript_chunk:
+                transcript_chunks.extend(transcript_chunk)
     
-    # Remove duplicate slide changes and add last_timestamp
-    print("Removing duplicate slide changes and adding last_timestamp...")
+    # Process results to remove duplicates and add last_timestamp
     final_timestamps = []
     current_slide = None
     last_timestamp = 0
+    
     for t, slide in results:
         if slide != current_slide:
             if current_slide is not None:
-                # Update the last_timestamp of the previous slide
                 final_timestamps[-1]['last_timestamp'] = last_timestamp
-            final_timestamps.append({'timestamp': t, 'slide': slide, 'last_timestamp': t})
+            final_timestamps.append({
+                'timestamp': t,
+                'slide': slide,
+                'last_timestamp': t
+            })
             current_slide = slide
-            print(f"Unique slide match found at {t}s. Slide: {slide}")
         last_timestamp = t
     
-    # Update the last_timestamp of the final slide
     if final_timestamps:
         final_timestamps[-1]['last_timestamp'] = last_timestamp
     
-    print(f"Finished processing. Found {len(final_timestamps)} unique slide matches.")
-    return final_timestamps
+    video.close()
+    
+    return {
+        'timestamps': final_timestamps,
+        'transcript': transcript_chunks,
+        'screenshots': screenshots
+    }
+
 # Process each presentation in the presentations folder
 presentations_folder = 'presentations'
 
@@ -194,14 +214,15 @@ for filename in os.listdir(presentations_folder):
             video_path = os.path.join('videos', video_name)
             
             if os.path.exists(video_path):
-                slide_timestamps = process_presentation(slide_texts, video_path)
-                if (len(slide_timestamps) > 3 and video_name not in already_done_videos):
+                slide_timestamps = process_video(video_path, slide_texts, whisper_tools)
+                if (len(slide_timestamps['timestamps']) > 3 and video_name not in already_done_videos):
                     already_done_videos.add(video_name)
                     lecture_results.append({
                         'video': {
                             'name': video_name,
-                            'timestamps': slide_timestamps,
-                            'transcript': None
+                            'timestamps': slide_timestamps['timestamps'],
+                            'transcript': slide_timestamps['transcript'],
+                            'screenshots': slide_timestamps['screenshots']
                         }
                     })
         
